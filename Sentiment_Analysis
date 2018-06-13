@@ -1,0 +1,246 @@
+
+
+hdfs dfs -mkdir tweet_data
+
+hdfs dfs -put /home/training/Desktop/tweet_clean_valid.json tweet_data
+
+
+add jar /home/training/Desktop/hive-serdes-1.0-SNAPSHOT.jar;
+
+CREATE EXTERNAL TABLE tweet
+(
+id_str string,
+created_at string,
+entities STRUCT<hashtags:ARRAY<STRUCT<text:STRING>>>, 
+text string, 
+user STRUCT<location:string, name:string, listed_count:int, followers_count:int>, 
+retweeted_status STRUCT<user:STRUCT<location:string, name:string, followers_count:int>>,
+place STRUCT<full_name:string, name:string>
+) 
+ROW FORMAT SERDE 'com.cloudera.hive.serde.JSONSerDe' 
+LOCATION '/user/training/tweet_data';
+
+
+CREATE TABLE tweet_table as
+select
+id_str as tweet_id,
+concat(regexp_extract(created_at, '^[A-Z][a-z]* ([A-Z][a-z]*) ([0-9][0-9]*) .* ([0-9]*)$', 3)
+         ,case regexp_extract(created_at, '^[A-Z][a-z]* ([A-Z][a-z]*) ([0-9][0-9]*) .* ([0-9]*)$', 1)
+            when 'Jan' then '-01-'
+            when 'Feb' then '-02-'
+            when 'Mar' then '-03-'
+            when 'Apr' then '-04-'
+            when 'May' then '-05-'
+            when 'Jun' then '-06-'
+            when 'Jul' then '-07-'
+            when 'Aug' then '-08-'
+            when 'Sep' then '-09-'
+            when 'Oct' then '-10-'
+            when 'Nov' then '-11-'
+            when 'Dec' then '-12-'
+            else '-**-'
+          end
+         ,regexp_extract(created_at, '^[A-Z][a-z]* ([A-Z][a-z]*) ([0-9][0-9]*) .* ([0-9]*)$', 2)
+         ) as date,
+entities.hashtags.text as hashtags,
+text as text,
+user.location as user_location,
+user.name as user_name,
+user.followers_count as followers_count,
+retweeted_status.user.location as retweet_location, 
+retweeted_status.user.name as retweet_name,
+retweeted_status.user.followers_count as retweet_followers_count,
+place.full_name as state,
+place.name as city
+from tweet;
+
+1.a
+
+create table hashtags as 
+select 
+tweet_id as tweet_id,
+hashtags as hashtags 
+from tweet_table;
+
+create table individual_hashtag as 
+select 
+tweet_id as tweet_id,
+hashtag from hashtags 
+LATERAL VIEW explode(hashtags) w as hashtag;
+
+
+select 
+hashtag, 
+count(hashtag) 
+from individual_hashtag 
+group by hashtag;
+
+
+1.b.
+Assumption 1
+create table tweet_location as 
+select 
+user_location as state, 
+tweet_id as tweet_id, 
+user_name as user_name 
+from tweet_table;
+
+
+
+select  
+state, 
+count(user_name) as Active_Users, 
+count(tweet_id) as No_of_tweets 
+from tweet_location 
+group by state 
+order by No_of_tweets desc;
+
+Assumption 2
+create table retweet_location as 
+select 
+retweet_location as state, 
+tweet_id as tweet_id, 
+retweet_name as retweet_name 
+from tweet_table;
+
+
+select  
+state, 
+count(retweet_name) as Active_Users, 
+count(tweet_id) as No_of_tweets  
+from retweet_location 
+group by state 
+order by No_of_tweets desc;
+
+
+Assumption 3
+create table tweet_place as 
+select 
+state as state,
+tweet_id as tweet_id,
+user_name as user_name 
+from tweet_table;
+
+
+
+select 
+state, 
+count(user_name) as Active_Users,
+count(tweet_id) as No_of_tweets 
+from tweet_place 
+group by state order by no_of_tweets desc;
+
+
+
+
+1.c.
+Assumption 1
+create table tweet_user_followers as 
+select 
+user_name as user_name, 
+followers_count as followers_count 
+from tweet_table;
+
+select  
+user_name, 
+followers_count 
+from tweet_user_followers 
+group by user_name,followers_count
+order by followers_count desc limit 10;
+
+
+select  
+user_name
+from tweet_user_followers 
+group by user_name
+limit 10;
+
+
+
+Assumption 2
+create table retweet_user_followers as 
+select 
+retweet_name as retweet_name, 
+retweet_followers_count as followers_count 
+from tweet_table;
+
+select  
+retweet_name, 
+followers_count 
+from retweet_user_followers 
+group by retweet_name, followers_count
+order by followers_count desc limit 10;
+
+
+
+1.d
+
+hdfs dfs -mkdir tweet_dictionary
+hdfs dfs -put /home/training/Desktop/Dictionary.txt tweet_dictionary
+
+
+
+create table dictionary
+(
+word string,
+rating int
+) 
+ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t';
+
+LOAD DATA INPATH '/user/training/tweet_dictionary/Dictionary.txt' into TABLE dictionary;
+
+
+
+	
+create table split_text as 
+select 
+tweet_id as tweet_id,
+split(text,' ') as words,
+user_name as user_name,
+date as date
+from tweet_table;
+
+
+create table tweet_text as 
+select 
+tweet_id as tweet_id,
+date as date,
+user_name as user_name, 
+word from split_text LATERAL VIEW explode(words) w as word;
+
+
+create table analysis as 
+select 
+tweet_id as tweet_id, 
+tweet_text.word as word, 
+dictionary.rating as rating, 
+date as date,
+user_name as user_name
+from tweet_text LEFT OUTER JOIN dictionary ON(tweet_text.word =dictionary.word);
+
+
+
+
+select 
+tweet_id, 
+sum(rating) as score,
+date,
+user_name 
+from analysis 
+GROUP BY tweet_id,date,user_name 
+order by score DESC limit 50;
+
+
+select 
+tweet_id, 
+sum(rating) as score,
+date,
+user_name 
+from analysis 
+where score < 0
+GROUP BY tweet_id,date,user_name 
+order by score DESC limit 20;
+
+
+
+
